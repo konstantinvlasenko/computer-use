@@ -1,3 +1,5 @@
 PyAutoGUI>=0.9.54
+anthropic[bedrock]>=0.37.1
 boto3>=1.35.76
 botocore~=1.35.76
+httpx~=0.27.0
