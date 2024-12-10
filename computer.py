@@ -4,7 +4,6 @@ import boto3
 from botocore.config import Config
 import pyautogui
 from io import BytesIO
-from run import run
 
 def get_screenshot(region=None):
     """
@@ -73,36 +72,32 @@ def get_answer(tool_use_id):
     new_png, new_width, new_height = get_screenshot()
 
     return {
-        'role': 'user',
-        'content': [
-            {
-                'toolResult': {
-                    'toolUseId': tool_use_id,
-                    'content': [{
-                        'image': {
-                            'format': 'png',
-                            'source': {
-                                'bytes': new_png
-                            }
-                        }
-                    }]
+        'toolResult': {
+            'toolUseId': tool_use_id,
+            'content': [{
+                'image': {
+                    'format': 'png',
+                    'source': {
+                        'bytes': new_png
+                    }
                 }
-            }
-        ]
+            }]
+        }
     }
 
 def get_tool_use(content):
     for item in content:
         if 'toolUse' in item:
-            return item['toolUse']
+            yield item['toolUse']
 
 async def main():
+    done = False
     client = boto3.client('bedrock-runtime', config=Config(region_name='us-west-2'))
-    initial_message = "Click 1 on calculator"
+    initial_message = "Calculate 1 + 2 by using calculator app"
     messages = []
 
     try:
-        while True:
+        while not done:
             png, width, height = get_screenshot()
 
             # If messages is empty, add initial user message
@@ -129,57 +124,64 @@ async def main():
             print("Model response:", message)
 
             try:
-                toolUse = get_tool_use(message['content'])
-                tool_use_id = toolUse['toolUseId']
-                input_data = toolUse['input']
+                content = []
 
-                # Handle actions
-                action = input_data.get('action')
-                print(action)
+                for toolUse in get_tool_use(message['content']):
+                    is_actionable = True
+                    tool_use_id = toolUse['toolUseId']
+                    input_data = toolUse['input']
 
-                if action == 'screenshot':
-                    pass
-                elif action == 'left_click':
-                    pyautogui.click()
-                elif action == 'mouse_move':
-                    _display_prefix = ""
-                    xdotool = f"{_display_prefix}xdotool"
+                    # Handle actions
+                    action = input_data.get('action')
+                    print(action)
 
-                    coordinates = parse_coordinate(input_data)
-                    if coordinates:
-                        x, y = coordinates
-                        # pyautogui.moveTo(x, y)
-                        await run(f"{xdotool} mousemove --sync {x} {y}")
+                    if action == 'screenshot':
+                        pass
+                    elif action == 'left_click':
+                        pyautogui.click()
+                    elif action == 'mouse_move':
+                        _display_prefix = ""
+                        xdotool = f"{_display_prefix}xdotool"
+
+                        coordinates = parse_coordinate(input_data)
+                        if coordinates:
+                            x, y = coordinates
+                            pyautogui.moveTo(x, y)
+                        else:
+                            print("Invalid coordinates received")
+                            continue
+                    elif 'coordinate' in input_data:
+                        coordinates = parse_coordinate(input_data)
+                        if coordinates:
+                            x, y = coordinates
+                            print(f"Clicking at: {x}, {y}")
+                            pyautogui.click(x, y)
+                        else:
+                            print("Invalid coordinates received")
+                            continue
+                    elif action is None:
+                        pass
                     else:
-                        print("Invalid coordinates received")
+                        print("Unsupported action received")
                         continue
-                elif 'coordinate' in input_data:
-                    coordinates = parse_coordinate(input_data)
-                    if coordinates:
-                        x, y = coordinates
-                        print(f"Clicking at: {x}, {y}")
-                        pyautogui.click(x, y)
-                    else:
-                        print("Invalid coordinates received")
-                        continue
-                else:
-                    print("Unsupported action received")
-                    continue
+
+                    content.append(get_answer(tool_use_id))
 
                 # Add assistant message
                 messages.append({
                     'role': 'assistant',
                     'content': message['content']
                 })
-
                 # Add answer message
-                messages.append(get_answer(tool_use_id))
+                messages.append({
+                    'role': 'user',
+                    'content':content
+                })
+                done = not is_actionable
 
             except (KeyError, IndexError) as e:
                 print(f"Error processing model response: {e}")
                 break
-
-            time.sleep(1)
 
     except KeyboardInterrupt:
         print("\nScript terminated by user")
