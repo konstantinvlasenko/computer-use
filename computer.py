@@ -1,186 +1,159 @@
-import asyncio
 import time
 import boto3
 from botocore.config import Config
 import pyautogui
 from io import BytesIO
+import json
+import base64
 
 def get_screenshot(region=None):
     """
-    Capture a screenshot and return its bytes and dimensions.
+    Capture a screenshot and return its base64 encoded string.
     """
     screenshot = pyautogui.screenshot(region=region)
-    width, height = screenshot.size
     buffer = BytesIO()
     screenshot.save(buffer, format='PNG')
-    image_bytes = buffer.getvalue()
+    base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
     buffer.close()
-    return image_bytes, width, height
+    return base64_image
 
-def send_to_bedrock(client, png, width, height, messages):
-    #print(messages)
-    return client.converse(
+def send_to_bedrock(client, messages):
+    response = client.invoke_model(
         modelId='anthropic.claude-3-5-sonnet-20241022-v2:0',
-        messages=messages,
-        toolConfig={
-            'tools': [
-                {
-                    'toolSpec': {
-                        'name': 'computer_tool',  # Changed name
-                        'inputSchema': {
-                            'json': {
-                                "type": "object"
-                            }
-                        }
-                    }
-                }
-            ]
-        },
-        additionalModelRequestFields={
-            "tools": [
-                {
-                    "type": "computer_20241022",
-                    "name": "computer",  # Matched name
-                    "display_height_px": 1080, #height,
-                    "display_width_px": 3840, #width,
-                    "display_number": 0
-                }
-            ],
-            "anthropic_beta": ["computer-use-2024-10-22"]
-        }
+        body=json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "anthropic_beta": ["computer-use-2024-10-22"],
+            "messages": messages,
+            "max_tokens": 4096,
+            "system": """You are a helpful AI agent with access to computer control. You can:
+                       1. Move the mouse using computer.mouse_move(x, y)
+                       2. Click using computer.click()
+                       3. Take screenshots using computer.screenshot()
+
+                       Always think step by step and explain your actions.
+
+                       ENVIRONMENT:
+                       1. macOS
+                       2. Resolution: 3840x1080
+
+                       IMPORTANT: Application is already running and should be visible on a screenshot""",
+        })
     )
+    return json.loads(response['body'].read())
 
-def parse_coordinate(input_data):
+def parse_tool_calls(response_text):
     """
-    Parse coordinate data from the input, handling different possible formats.
-    Returns tuple of (x, y) coordinates or None if parsing fails.
+    Parse tool calls from the model's response text.
     """
-    try:
-        if isinstance(input_data.get('coordinate'), list):
-            return tuple(input_data['coordinate'])
-        elif isinstance(input_data.get('coordinate'), str):
-            # Remove brackets and split
-            coord_str = input_data['coordinate'].strip('[]')
-            x, y = map(int, coord_str.split(','))
-            return x, y
-        return None
-    except (ValueError, KeyError, TypeError):
-        print(f"Error parsing coordinates from input: {input_data}")
-        return None
+    tool_calls = []
+    lines = response_text.split('\n')
 
-def get_answer(tool_use_id):
-    new_png, new_width, new_height = get_screenshot()
+    for line in lines:
+        if "computer.mouse_move" in line:
+            try:
+                coords = line.split("computer.mouse_move(")[1].split(")")[0]
+                x, y = map(int, coords.split(","))
+                tool_calls.append(("mouse_move", (x, y)))
+            except Exception as e:
+                print(f"Error parsing mouse_move command: {e}")
+        elif "computer.click()" in line:
+            tool_calls.append(("click", None))
+        elif "computer.screenshot()" in line:
+            tool_calls.append(("screenshot", None))
 
-    return {
-        'toolResult': {
-            'toolUseId': tool_use_id,
-            'content': [{
-                'image': {
-                    'format': 'png',
-                    'source': {
-                        'bytes': new_png
-                    }
-                }
-            }]
-        }
-    }
+    return tool_calls
 
-def get_tool_use(content):
-    for item in content:
-        if 'toolUse' in item:
-            yield item['toolUse']
 
-async def main():
-    done = False
+def execute_tool_calls(tool_calls):
+    """
+    Execute the parsed tool calls.
+    """
+    took_screenshot = False
+
+    for action, params in tool_calls:
+        if action == "mouse_move":
+            x, y = params
+            print(f"Moving mouse to: {x}, {y}")
+            pyautogui.moveTo(x, y)
+        elif action == "click":
+            print("Clicking")
+            pyautogui.click()
+        elif action == "screenshot":
+            print("Taking screenshot")
+            took_screenshot = True
+
+    return took_screenshot
+
+
+def main():
     client = boto3.client('bedrock-runtime', config=Config(region_name='us-west-2'))
     initial_message = "Calculate 1 + 2 by using calculator app"
     messages = []
 
     try:
-        while not done:
-            png, width, height = get_screenshot()
+        while True:
+            # Get initial screenshot
+            screenshot = get_screenshot()
 
-            # If messages is empty, add initial user message
+            # If messages is empty, add initial user message with screenshot
             if not messages:
                 messages = [{
                     'role': 'user',
                     'content': [
                         {
+                            'type': 'text',
                             'text': initial_message
                         },
                         {
-                            'image': {
-                                'format': 'png',
-                                'source': {
-                                    'bytes': png
-                                }
+                            'type': 'image',
+                            'source': {
+                                'type': 'base64',
+                                'media_type': 'image/png',
+                                'data': screenshot
                             }
                         }
                     ]
                 }]
 
-            response = send_to_bedrock(client, png, width, height, messages)
-            message = response['output']['message']
-            print("Model response:", message)
+            # Get model response
+            response = send_to_bedrock(client, messages)
+            response_text = response['content'][0]['text']
+            print("Model response:", response_text)
 
-            try:
-                content = []
+            # Parse and execute tool calls
+            tool_calls = parse_tool_calls(response_text)
+            took_screenshot = execute_tool_calls(tool_calls)
 
-                for toolUse in get_tool_use(message['content']):
-                    is_actionable = True
-                    tool_use_id = toolUse['toolUseId']
-                    input_data = toolUse['input']
+            # Add assistant message
+            messages.append({
+                'role': 'assistant',
+                'content': response_text
+            })
 
-                    # Handle actions
-                    action = input_data.get('action')
-                    print(action)
-
-                    if action == 'screenshot':
-                        pass
-                    elif action == 'left_click':
-                        pyautogui.click()
-                    elif action == 'mouse_move':
-                        _display_prefix = ""
-                        xdotool = f"{_display_prefix}xdotool"
-
-                        coordinates = parse_coordinate(input_data)
-                        if coordinates:
-                            x, y = coordinates
-                            pyautogui.moveTo(x, y)
-                        else:
-                            print("Invalid coordinates received")
-                            continue
-                    elif 'coordinate' in input_data:
-                        coordinates = parse_coordinate(input_data)
-                        if coordinates:
-                            x, y = coordinates
-                            print(f"Clicking at: {x}, {y}")
-                            pyautogui.click(x, y)
-                        else:
-                            print("Invalid coordinates received")
-                            continue
-                    elif action is None:
-                        pass
-                    else:
-                        print("Unsupported action received")
-                        continue
-
-                    content.append(get_answer(tool_use_id))
-
-                # Add assistant message
-                messages.append({
-                    'role': 'assistant',
-                    'content': message['content']
-                })
-                # Add answer message
+            # If we took a new screenshot, add it to the next message
+            if took_screenshot:
+                new_screenshot = get_screenshot()
                 messages.append({
                     'role': 'user',
-                    'content':content
+                    'content': [
+                        {
+                            'type': 'text',
+                            'text': 'Here is the current screenshot. Please continue.'
+                        },
+                        {
+                            'type': 'image',
+                            'source': {
+                                'type': 'base64',
+                                'media_type': 'image/png',
+                                'data': new_screenshot
+                            }
+                        }
+                    ]
                 })
-                done = not is_actionable
 
-            except (KeyError, IndexError) as e:
-                print(f"Error processing model response: {e}")
+            # Check if task is complete
+            if "task is complete" in response_text.lower():
+                print("Task completed!")
                 break
 
     except KeyboardInterrupt:
@@ -192,4 +165,4 @@ async def main():
 if __name__ == "__main__":
     print("Starting in 2 seconds...")
     time.sleep(2)
-    asyncio.run(main())
+    main()
