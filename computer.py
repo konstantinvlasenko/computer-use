@@ -36,46 +36,55 @@ def send_to_bedrock(client, messages):
                        ENVIRONMENT:
                        1. Windows
 
-                       IMPORTANT: Application is already running and should be visible on a screenshot""",
+                       IMPORTANT: You don't need to start an application. It is running already""",
         })
     )
     return json.loads(response['body'].read())
 
+
 def parse_tool_calls(response_text):
     """
     Parse tool calls from the model's response text using regex.
+    Returns a list of tuples containing (action, parameters).
     """
     tool_calls = []
-    
-    # Use regex to find coordinates in the format computer.mouse_move(x, y)
-    mouse_moves = re.finditer(r'computer\.mouse_move\((\d+)\s*,\s*(\d+)\)', response_text)
-    for match in mouse_moves:
-        try:
-            x = int(match.group(1))
-            y = int(match.group(2))
-            tool_calls.append(("mouse_move", (x, y)))
-        except ValueError as e:
-            print(f"Error parsing coordinates: {e}")
-    
-    # Look for clicks
-    if "computer.click()" in response_text:
-        tool_calls.append(("click", None))
-    
-    # Look for screenshots
-    if "computer.screenshot()" in response_text:
-        tool_calls.append(("screenshot", None))
-    
+    print(response_text)
+
+    # Process the text line by line to maintain order of operations
+    for line in response_text.split('\n'):
+        # Look for mouse moves
+        mouse_move_matches = re.finditer(r'computer\.mouse_move\((\d+)\s*,\s*(\d+)\)', line)
+        for match in mouse_move_matches:
+            try:
+                x = int(match.group(1))
+                y = int(match.group(2))
+                tool_calls.append(("mouse_move", (x, y)))
+            except ValueError as e:
+                print(f"Error parsing coordinates: {e}")
+
+        # Look for clicks on this line
+        click_matches = re.finditer(r'computer\.click\(\)', line)
+        for _ in click_matches:
+            tool_calls.append(("click", None))
+
+        # Look for screenshots on this line
+        screenshot_matches = re.finditer(r'computer\.screenshot\(\)', line)
+        for _ in screenshot_matches:
+            tool_calls.append(("screenshot", None))
+
     return tool_calls
 
 
 def execute_tool_calls(tool_calls):
     """
-    Execute the parsed tool calls.
+    Execute the parsed tool calls with appropriate delays.
     """
     took_screenshot = False
 
     for action, params in tool_calls:
+        # Add a delay between actions for stability
         time.sleep(0.5)
+
         if action == "mouse_move":
             x, y = params
             print(f"Moving mouse to: {x}, {y}")
@@ -90,7 +99,6 @@ def execute_tool_calls(tool_calls):
             print(f"Action {action} is not implemented")
 
     return took_screenshot
-
 
 def main():
     client = boto3.client('bedrock-runtime', config=Config(region_name='us-west-2'))
@@ -126,7 +134,6 @@ def main():
             response = send_to_bedrock(client, messages)
             if response['content']:
                 response_text = response['content'][0]['text']
-                print("Model response:", response_text)
             else:
                 print(response['stop_reason'])
                 break
