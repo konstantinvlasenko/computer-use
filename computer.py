@@ -5,6 +5,7 @@ import pyautogui
 from io import BytesIO
 import json
 import base64
+import re
 
 def get_screenshot(region=None):
     """
@@ -33,8 +34,7 @@ def send_to_bedrock(client, messages):
                        Always think step by step and explain your actions.
 
                        ENVIRONMENT:
-                       1. macOS
-                       2. Resolution: 3840x1080
+                       1. Windows
 
                        IMPORTANT: Application is already running and should be visible on a screenshot""",
         })
@@ -43,24 +43,28 @@ def send_to_bedrock(client, messages):
 
 def parse_tool_calls(response_text):
     """
-    Parse tool calls from the model's response text.
+    Parse tool calls from the model's response text using regex.
     """
     tool_calls = []
-    lines = response_text.split('\n')
-
-    for line in lines:
-        if "computer.mouse_move" in line:
-            try:
-                coords = line.split("computer.mouse_move(")[1].split(")")[0]
-                x, y = map(int, coords.split(","))
-                tool_calls.append(("mouse_move", (x, y)))
-            except Exception as e:
-                print(f"Error parsing mouse_move command: {e}")
-        elif "computer.click()" in line:
-            tool_calls.append(("click", None))
-        elif "computer.screenshot()" in line:
-            tool_calls.append(("screenshot", None))
-
+    
+    # Use regex to find coordinates in the format computer.mouse_move(x, y)
+    mouse_moves = re.finditer(r'computer\.mouse_move\((\d+)\s*,\s*(\d+)\)', response_text)
+    for match in mouse_moves:
+        try:
+            x = int(match.group(1))
+            y = int(match.group(2))
+            tool_calls.append(("mouse_move", (x, y)))
+        except ValueError as e:
+            print(f"Error parsing coordinates: {e}")
+    
+    # Look for clicks
+    if "computer.click()" in response_text:
+        tool_calls.append(("click", None))
+    
+    # Look for screenshots
+    if "computer.screenshot()" in response_text:
+        tool_calls.append(("screenshot", None))
+    
     return tool_calls
 
 
@@ -71,6 +75,7 @@ def execute_tool_calls(tool_calls):
     took_screenshot = False
 
     for action, params in tool_calls:
+        time.sleep(0.5)
         if action == "mouse_move":
             x, y = params
             print(f"Moving mouse to: {x}, {y}")
@@ -81,6 +86,8 @@ def execute_tool_calls(tool_calls):
         elif action == "screenshot":
             print("Taking screenshot")
             took_screenshot = True
+        else:
+            print(f"Action {action} is not implemented")
 
     return took_screenshot
 
@@ -117,8 +124,12 @@ def main():
 
             # Get model response
             response = send_to_bedrock(client, messages)
-            response_text = response['content'][0]['text']
-            print("Model response:", response_text)
+            if response['content']:
+                response_text = response['content'][0]['text']
+                print("Model response:", response_text)
+            else:
+                print(response['stop_reason'])
+                break
 
             # Parse and execute tool calls
             tool_calls = parse_tool_calls(response_text)
