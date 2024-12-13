@@ -1,3 +1,4 @@
+import platform
 import time
 import boto3
 from botocore.config import Config
@@ -26,17 +27,18 @@ def send_to_bedrock(client, messages):
             "anthropic_beta": ["computer-use-2024-10-22"],
             "messages": messages,
             "max_tokens": 4096,
-            "system": """You are a helpful AI agent with access to computer control. You can:
+            "system": f"""You are a helpful AI agent with access to computer control. You can:
                        1. Move the mouse using computer.mouse_move(x, y)
                        2. Click using computer.click()
                        3. Take screenshots using computer.screenshot()
 
-                       Always think step by step and explain your actions.
+                       Always think step by step.
 
                        ENVIRONMENT:
-                       1. Windows
+                       1. {platform.system()}
 
-                       IMPORTANT: You don't need to start an application. It is running already""",
+                       IMPORTANT:
+                       1. You don't need to start an application. It is running already.""",
         })
     )
     return json.loads(response['body'].read())
@@ -83,7 +85,7 @@ def execute_tool_calls(tool_calls):
 
     for action, params in tool_calls:
         # Add a delay between actions for stability
-        time.sleep(0.5)
+        time.sleep(0.1)
 
         if action == "mouse_move":
             x, y = params
@@ -102,7 +104,7 @@ def execute_tool_calls(tool_calls):
 
 def main():
     client = boto3.client('bedrock-runtime', config=Config(region_name='us-west-2'))
-    initial_message = "Calculate 1 + 2 by using calculator app"
+    initial_message = "Calculate 1 + 2 by using calculator app. Make sure to reset a calculator state."
     messages = []
 
     try:
@@ -181,6 +183,6 @@ def main():
 
 
 if __name__ == "__main__":
-    print("Starting in 2 seconds...")
-    time.sleep(2)
+    print("Starting...")
+    time.sleep(0.5)
     main()
