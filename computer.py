@@ -1,4 +1,5 @@
 import asyncio
+import platform
 import time
 import boto3
 from botocore.config import Config
@@ -22,6 +23,19 @@ def send_to_bedrock(client, png, width, height, messages):
     return client.converse(
         modelId='anthropic.claude-3-5-sonnet-20241022-v2:0',
         messages=messages,
+        system=[{'text': f"""You are a helpful AI agent with access to computer control. You can:
+                       1. Move the mouse using computer.mouse_move(x, y)
+                       2. Click using computer.click()
+                       3. Take screenshots using computer.screenshot()
+
+                       Always think step by step.
+
+                       ENVIRONMENT:
+                       1. {platform.system()}
+
+                       IMPORTANT:
+                       1. You don't need to start an application. It is running already."""
+        }],
         toolConfig={
             'tools': [
                 {
