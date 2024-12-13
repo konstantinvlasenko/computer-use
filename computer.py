@@ -1,6 +1,7 @@
 import asyncio
 import platform
-import time
+from time import sleep
+
 import boto3
 from botocore.config import Config
 import pyautogui
@@ -11,23 +12,18 @@ def get_screenshot(region=None):
     Capture a screenshot and return its bytes and dimensions.
     """
     screenshot = pyautogui.screenshot(region=region)
-    width, height = screenshot.size
     buffer = BytesIO()
     screenshot.save(buffer, format='PNG')
     image_bytes = buffer.getvalue()
     buffer.close()
-    return image_bytes, width, height
+    return image_bytes
 
-def send_to_bedrock(client, png, width, height, messages):
+def send_to_bedrock(client, messages):
     #print(messages)
     return client.converse(
         modelId='anthropic.claude-3-5-sonnet-20241022-v2:0',
         messages=messages,
-        system=[{'text': f"""You are a helpful AI agent with access to computer control. You can:
-                       1. Move the mouse using computer.mouse_move(x, y)
-                       2. Click using computer.click()
-                       3. Take screenshots using computer.screenshot()
-
+        system=[{'text': f"""You are a helpful AI agent with access to computer control.
                        Always think step by step.
 
                        ENVIRONMENT:
@@ -55,8 +51,8 @@ def send_to_bedrock(client, png, width, height, messages):
                 {
                     "type": "computer_20241022",
                     "name": "computer",  # Matched name
-                    "display_height_px": 1080, #height,
-                    "display_width_px": 3840, #width,
+                    "display_height_px": 800,  # height,
+                    "display_width_px": 1280,  # width,
                     "display_number": 0
                 }
             ],
@@ -82,22 +78,30 @@ def parse_coordinate(input_data):
         print(f"Error parsing coordinates from input: {input_data}")
         return None
 
-def get_answer(tool_use_id):
-    new_png, new_width, new_height = get_screenshot()
-
-    return {
+def get_answer(tool_use_id, screenshot):
+    sleep(0.1)
+    answer = {
         'toolResult': {
             'toolUseId': tool_use_id,
-            'content': [{
-                'image': {
-                    'format': 'png',
-                    'source': {
-                        'bytes': new_png
-                    }
-                }
-            }]
+            'content': []
         }
     }
+
+    if screenshot:
+        answer['toolResult']['content'].append({
+            'image': {
+                'format': 'png',
+                'source': {
+                    'bytes': screenshot
+                }
+            }
+        })
+    else:
+        answer['toolResult']['content'].append({
+            'text': 'OK'
+        })
+
+    return answer
 
 def get_tool_use(content):
     for item in content:
@@ -107,13 +111,15 @@ def get_tool_use(content):
 async def main():
     done = False
     client = boto3.client('bedrock-runtime', config=Config(region_name='us-west-2'))
-    initial_message = "Calculate 1 + 2 by using calculator app"
+
+    with open('prompt.txt', 'r') as file:
+        initial_message = file.read()
+
+    #initial_message = "Calculate 1 + 2 by using calculator app. Combine all instructions"
     messages = []
 
     try:
         while not done:
-            png, width, height = get_screenshot()
-
             # If messages is empty, add initial user message
             if not messages:
                 messages = [{
@@ -126,14 +132,14 @@ async def main():
                             'image': {
                                 'format': 'png',
                                 'source': {
-                                    'bytes': png
+                                    'bytes': get_screenshot()
                                 }
                             }
                         }
                     ]
                 }]
 
-            response = send_to_bedrock(client, png, width, height, messages)
+            response = send_to_bedrock(client, messages)
             message = response['output']['message']
             print("Model response:", message)
 
@@ -148,15 +154,19 @@ async def main():
                     # Handle actions
                     action = input_data.get('action')
                     print(action)
-
+                    screenshot = None
                     if action == 'screenshot':
-                        pass
+                        screenshot = get_screenshot()
+                    elif action == 'type':
+                        pyautogui.write(input_data.get('text'))
+                    elif action == 'key':
+                        key = input_data.get('text')
+                        if key.lower() == 'return':
+                            key = 'enter'
+                        pyautogui.press(input_data.get('text'))
                     elif action == 'left_click':
                         pyautogui.click()
                     elif action == 'mouse_move':
-                        _display_prefix = ""
-                        xdotool = f"{_display_prefix}xdotool"
-
                         coordinates = parse_coordinate(input_data)
                         if coordinates:
                             x, y = coordinates
@@ -177,9 +187,9 @@ async def main():
                         pass
                     else:
                         print("Unsupported action received")
-                        continue
+                        break
 
-                    content.append(get_answer(tool_use_id))
+                    content.append(get_answer(tool_use_id, screenshot))
 
                 # Add assistant message
                 messages.append({
@@ -204,6 +214,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    print("Starting in 2 seconds...")
-    time.sleep(2)
+    print("Starting...")
     asyncio.run(main())
