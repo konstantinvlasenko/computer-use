@@ -1,7 +1,6 @@
 import asyncio
 import platform
 from time import sleep
-
 import boto3
 from botocore.config import Config
 import pyautogui
@@ -141,7 +140,11 @@ async def main():
 
             response = send_to_bedrock(client, messages)
             message = response['output']['message']
-            print("Model response:", message)
+            text = message['content'][0].get('text')
+            if text:
+                print(text)
+                if 'wait' in text:
+                    sleep(5)
 
             try:
                 content = []
@@ -166,11 +169,14 @@ async def main():
                         pyautogui.press(input_data.get('text'))
                     elif action == 'left_click':
                         pyautogui.click()
+                        sleep(0.25)
+                        screenshot = get_screenshot()
                     elif action == 'mouse_move':
                         coordinates = parse_coordinate(input_data)
                         if coordinates:
                             x, y = coordinates
                             pyautogui.moveTo(x, y)
+                            sleep(0.25)
                         else:
                             print("Invalid coordinates received")
                             continue
