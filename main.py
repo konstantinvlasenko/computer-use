@@ -5,6 +5,9 @@ import boto3
 from botocore.config import Config
 import pyautogui
 from io import BytesIO
+from tools.computer import ComputerTool, ToolResult
+
+tool = ComputerTool()
 
 def get_screenshot(region=None):
     """
@@ -59,53 +62,27 @@ def send_to_bedrock(client, messages):
         }
     )
 
-def parse_coordinate(input_data):
-    """
-    Parse coordinate data from the input, handling different possible formats.
-    Returns tuple of (x, y) coordinates or None if parsing fails.
-    """
-    try:
-        if isinstance(input_data.get('coordinate'), list):
-            return tuple(input_data['coordinate'])
-        elif isinstance(input_data.get('coordinate'), str):
-            # Remove brackets and split
-            coord_str = input_data['coordinate'].strip('[]')
-            x, y = map(int, coord_str.split(','))
-            return x, y
-        return None
-    except (ValueError, KeyError, TypeError):
-        print(f"Error parsing coordinates from input: {input_data}")
-        return None
-
-def get_answer(tool_use_id, screenshot):
-    sleep(0.1)
-    answer = {
-        'toolResult': {
-            'toolUseId': tool_use_id,
-            'content': []
-        }
-    }
-
-    if screenshot:
-        answer['toolResult']['content'].append({
+def _make_api_tool_result(result: ToolResult, tool_use_id: str):
+    tool_result_content = []
+    if result.output:
+        tool_result_content.append({
+            "text": result.output,
+        })
+    if result.image:
+        tool_result_content.append({
             'image': {
                 'format': 'png',
                 'source': {
-                    'bytes': screenshot
+                    'bytes': result.image
                 }
-            }
+            },
         })
-    else:
-        answer['toolResult']['content'].append({
-            'text': 'OK'
-        })
-
-    return answer
-
-def get_tool_use(content):
-    for item in content:
-        if 'toolUse' in item:
-            yield item['toolUse']
+    return {
+        'toolResult': {
+            'toolUseId': tool_use_id,
+            'content': tool_result_content
+        }
+    }
 
 async def main():
     done = False
@@ -117,106 +94,57 @@ async def main():
     #initial_message = "Calculate 1 + 2 by using calculator app. Combine all instructions"
     messages = []
 
-    try:
-        while not done:
-            # If messages is empty, add initial user message
-            if not messages:
-                messages = [{
-                    'role': 'user',
-                    'content': [
-                        {
-                            'text': initial_message
-                        },
-                        {
-                            'image': {
-                                'format': 'png',
-                                'source': {
-                                    'bytes': get_screenshot()
-                                }
+    while True:
+        # If messages is empty, add initial user message
+        if not messages:
+            messages = [{
+                'role': 'user',
+                'content': [
+                    {
+                        'text': initial_message
+                    },
+                    {
+                        'image': {
+                            'format': 'png',
+                            'source': {
+                                'bytes': get_screenshot()
                             }
                         }
-                    ]
-                }]
+                    }
+                ]
+            }]
 
-            response = send_to_bedrock(client, messages)
-            message = response['output']['message']
-            text = message['content'][0].get('text')
-            if text:
-                print(text)
-                if 'wait' in text:
-                    sleep(5)
+        response = send_to_bedrock(client, messages)
+        message = response['output']['message']
+        text = message['content'][0].get('text')
+        if text:
+            print(text)
+            if 'wait' in text:
+                sleep(5)
 
-            try:
-                content = []
+        # Add assistant message
+        messages.append({
+            'role': 'assistant',
+            'content': message['content']
+        })
 
-                for toolUse in get_tool_use(message['content']):
-                    is_actionable = True
-                    tool_use_id = toolUse['toolUseId']
-                    input_data = toolUse['input']
+        tool_result_content = []
+        for content_block in message['content']:
+            print(content_block)
+            tool_use = content_block.get('toolUse')
+            if tool_use:
+                result = tool.__call__(**tool_use['input'])
+                tool_result_content.append(
+                    _make_api_tool_result(result, tool_use['toolUseId'])
+                )
 
-                    # Handle actions
-                    action = input_data.get('action')
-                    print(action)
-                    screenshot = None
-                    if action == 'screenshot':
-                        screenshot = get_screenshot()
-                    elif action == 'type':
-                        pyautogui.write(input_data.get('text'))
-                    elif action == 'key':
-                        key = input_data.get('text')
-                        if key.lower() == 'return':
-                            key = 'enter'
-                        pyautogui.press(input_data.get('text'))
-                    elif action == 'left_click':
-                        pyautogui.click()
-                        sleep(0.25)
-                        screenshot = get_screenshot()
-                    elif action == 'mouse_move':
-                        coordinates = parse_coordinate(input_data)
-                        if coordinates:
-                            x, y = coordinates
-                            pyautogui.moveTo(x, y)
-                            sleep(0.25)
-                        else:
-                            print("Invalid coordinates received")
-                            continue
-                    elif 'coordinate' in input_data:
-                        coordinates = parse_coordinate(input_data)
-                        if coordinates:
-                            x, y = coordinates
-                            print(f"Clicking at: {x}, {y}")
-                            pyautogui.click(x, y)
-                        else:
-                            print("Invalid coordinates received")
-                            continue
-                    elif action is None:
-                        pass
-                    else:
-                        print("Unsupported action received")
-                        break
+        if not tool_result_content:
+            break
 
-                    content.append(get_answer(tool_use_id, screenshot))
-
-                # Add assistant message
-                messages.append({
-                    'role': 'assistant',
-                    'content': message['content']
-                })
-                # Add answer message
-                messages.append({
-                    'role': 'user',
-                    'content':content
-                })
-                done = not is_actionable
-
-            except (KeyError, IndexError) as e:
-                print(f"Error processing model response: {e}")
-                break
-
-    except KeyboardInterrupt:
-        print("\nScript terminated by user")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+        messages.append({
+            'role': 'user',
+            'content': tool_result_content
+        })
 
 
 if __name__ == "__main__":
